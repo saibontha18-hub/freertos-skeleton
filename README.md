@@ -1,6 +1,15 @@
 # freertos-skeleton
 
-A minimal FreeRTOS task skeleton for Cortex-M microcontrollers, using only standard FreeRTOS API calls. It demonstrates three common patterns: a periodic task (`vLedTask` blinks an LED with `vTaskDelay`), a queue-based command handler (`vCmdTask` receives text commands via `xQueueReceive` and dispatches `LED ON` / `LED OFF` / `STATUS`), and debug output over UART through a small board-support interface (`board.h`).
+A FreeRTOS task skeleton for Cortex-M microcontrollers, using only standard FreeRTOS API calls. It demonstrates the patterns every firmware project needs: periodic tasks, queue-based messaging, software timers, and a heartbeat watchdog.
+
+## Tasks and timer
+
+- `vLedTask` — blinks LED1 every 500 ms with `vTaskDelay`.
+- `vCmdTask` — queue-based command handler: receives text commands via `xCmdQueue` and dispatches `LED ON` / `LED OFF` / `STATUS`. Uses a 1 s receive timeout (not `portMAX_DELAY`) so it stays responsive for heartbeat monitoring.
+- `vSensorTask` — samples `board_adc_read()` every 250 ms and pushes readings into `xSampleQueue` (drops under backpressure rather than stalling the cadence).
+- `vLogTask` — consumes `xSampleQueue` and prints `adc=<raw> tick=<n>` lines over UART through the board-support interface.
+- `vWatchdogTask` — every 2 s, verifies each task's heartbeat counter has advanced since the last check; calls `board_panic()` naming the offending task if any counter stalls. A 5 s grace period at startup lets slow starters check in first.
+- Software timer `led2` — auto-reload timer toggling LED2 every 1250 ms, independent of the `vLedTask` cadence. The callback runs in the timer daemon task context and must never block.
 
 > **Does not compile standalone.** This skeleton intentionally excludes the FreeRTOS kernel sources, the port layer, and the MCU startup/linker files — those come from your toolchain and board. See "What you must provide" below.
 
@@ -14,7 +23,11 @@ A minimal FreeRTOS task skeleton for Cortex-M microcontrollers, using only stand
 
 1. **FreeRTOS-Kernel sources** — `tasks.c`, `queue.c`, `list.c`, `timers.c` (event_groups.c optional), plus the port: `portable/GCC/ARM_CM4F/port.c`, `portable/GCC/ARM_CM4F/portmacro.h`, and a heap implementation such as `portable/MemMang/heap_4.c`.
 2. **`FreeRTOSConfig.h`** — a template is included in this repo; copy it and adjust `configCPU_CLOCK_HZ`, heap size, and NVIC priorities for your chip.
-3. **`board.c`** — implements the four functions declared in `board.h` (`board_init`, `board_led_toggle`, `board_led_set`, `board_uart_puts`) for your hardware.
+3. **`board.c`** — implements the seven functions declared in `board.h` for your hardware:
+   - `board_init`, `board_led_toggle`, `board_led_set`, `board_uart_puts` (clocks, GPIO, UART)
+   - `board_adc_read` — sample the ADC channel feeding `vSensorTask`
+   - `board_led2_toggle` — second LED, driven by the software timer
+   - `board_panic` — fatal-error handler (log the reason, then halt or reset; must not return)
 4. **Startup code and linker script** for your MCU (usually from STM32Cube or your vendor pack).
 5. **UART RX path** — to feed live commands, call `xQueueSendFromISR(xCmdQueue, ...)` from your UART receive ISR. Until then, the two demo commands seeded in `main()` exercise the handler.
 
@@ -40,13 +53,13 @@ Adjust CPU flags, include paths, and the linker script for your exact part.
 
 ## API used
 
-`xTaskCreate`, `vTaskStartScheduler`, `vTaskDelay`, `pdMS_TO_TICKS`, `xQueueCreate`, `xQueueSend`, `xQueueReceive`, `portMAX_DELAY`, `configASSERT`, `xPortGetFreeHeapSize` — all standard, portable across FreeRTOS ports.
+`xTaskCreate`, `vTaskStartScheduler`, `vTaskDelay`, `pdMS_TO_TICKS`, `xQueueCreate`, `xQueueSend`, `xQueueReceive`, `portMAX_DELAY`, `configASSERT`, `xPortGetFreeHeapSize`, `xTaskGetTickCount`, `xTimerCreate`, `xTimerStart` — all standard, portable across FreeRTOS ports.
 
 ## Files
 
-- `main.c` — tasks and command handler
-- `board.h` — BSP interface you implement per board
-- `FreeRTOSConfig.h` — template configuration (adapt to your MCU)
+- `main.c` — tasks, software timer, and heartbeat watchdog
+- `board.h` — BSP interface you implement per board (LEDs, UART, ADC, panic)
+- `FreeRTOSConfig.h` — template configuration (adapt to your MCU; software timers enabled)
 
 ## License
 
