@@ -7,6 +7,8 @@
  *                 xCmdQueue and acts on them ("LED ON", "LED OFF", "STATUS").
  *   vSensorTask - samples board_adc_read() every 250 ms and pushes the
  *                 readings into xSampleQueue.
+ *   vLogTask    - consumes xSampleQueue and prints "adc=<raw> tick=<n>"
+ *                 lines over UART.
  * (UART RX ISR not included: wire your UART receive interrupt to call
  *  xQueueSendFromISR(xCmdQueue, ...) to feed vCmdTask on real hardware.)
  *
@@ -26,10 +28,12 @@
 #define LED_TASK_PRIO    ( tskIDLE_PRIORITY + 1 )
 #define CMD_TASK_PRIO    ( tskIDLE_PRIORITY + 2 )
 #define SENSOR_TASK_PRIO ( tskIDLE_PRIORITY + 2 )
+#define LOG_TASK_PRIO    ( tskIDLE_PRIORITY + 1 )
 
 #define LED_TASK_STACK    ( configMINIMAL_STACK_SIZE )
 #define CMD_TASK_STACK    ( configMINIMAL_STACK_SIZE * 2 )
 #define SENSOR_TASK_STACK ( configMINIMAL_STACK_SIZE )
+#define LOG_TASK_STACK    ( configMINIMAL_STACK_SIZE * 2 )
 
 #define CMD_QUEUE_LEN    8
 #define CMD_MAX_LEN      32
@@ -117,6 +121,27 @@ static void vSensorTask(void *pvParameters)
     }
 }
 
+static void vLogTask(void *pvParameters)
+{
+    sample_t xSample;
+    char pcLine[64];
+
+    (void) pvParameters;
+
+    for (;;)
+    {
+        /* 1 s timeout instead of portMAX_DELAY: stays responsive and gives
+         * the task a chance to do periodic work even when no samples arrive. */
+        if (xQueueReceive(xSampleQueue, &xSample, pdMS_TO_TICKS(1000)) == pdPASS)
+        {
+            snprintf(pcLine, sizeof(pcLine), "adc=%u tick=%lu\r\n",
+                     (unsigned) xSample.usAdc,
+                     (unsigned long) xSample.xTick);
+            board_uart_puts(pcLine);
+        }
+    }
+}
+
 int main(void)
 {
     cmd_t demo;
@@ -135,6 +160,8 @@ int main(void)
                 CMD_TASK_PRIO, NULL);
     xTaskCreate(vSensorTask, "sensor", SENSOR_TASK_STACK, NULL,
                 SENSOR_TASK_PRIO, NULL);
+    xTaskCreate(vLogTask, "log", LOG_TASK_STACK, NULL,
+                LOG_TASK_PRIO, NULL);
 
     /* Seed demo commands so the handler path is exercised even with no
      * UART RX wired up yet. Remove once xQueueSendFromISR feeds the queue. */
