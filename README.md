@@ -1,15 +1,15 @@
 # freertos-skeleton
 
-A FreeRTOS task skeleton for Cortex-M microcontrollers, using only standard FreeRTOS API calls. It demonstrates the patterns every firmware project needs: periodic tasks, queue-based messaging, software timers, and a heartbeat watchdog.
+A FreeRTOS task skeleton for Cortex-M. These are the patterns I end up rewriting in every firmware project — periodic tasks, queue-based messaging, a software timer, and a heartbeat watchdog — so I finally put them in one place. All standard FreeRTOS API, nothing port-specific.
 
 ## Tasks and timer
 
 - `vLedTask` — blinks LED1 every 500 ms with `vTaskDelay`.
-- `vCmdTask` — queue-based command handler: receives text commands via `xCmdQueue` and dispatches `LED ON` / `LED OFF` / `STATUS`. Uses a 1 s receive timeout (not `portMAX_DELAY`) so it stays responsive for heartbeat monitoring.
-- `vSensorTask` — samples `board_adc_read()` every 250 ms and pushes readings into `xSampleQueue` (drops under backpressure rather than stalling the cadence).
-- `vLogTask` — consumes `xSampleQueue` and prints `adc=<raw> tick=<n>` lines over UART through the board-support interface.
-- `vWatchdogTask` — every 2 s, verifies each task's heartbeat counter has advanced since the last check; calls `board_panic()` naming the offending task if any counter stalls. A 5 s grace period at startup lets slow starters check in first.
-- Software timer `led2` — auto-reload timer toggling LED2 every 1250 ms, independent of the `vLedTask` cadence. The callback runs in the timer daemon task context and must never block.
+- `vCmdTask` — queue-based command handler: receives text commands via `xCmdQueue` and dispatches `LED ON` / `LED OFF` / `STATUS`. Uses a 1 s receive timeout instead of `portMAX_DELAY` so the heartbeat keeps ticking when no commands are coming in.
+- `vSensorTask` — samples `board_adc_read()` every 250 ms into `xSampleQueue`. If the queue fills up it drops the sample rather than stalling the cadence.
+- `vLogTask` — drains `xSampleQueue` and prints `adc=<raw> tick=<n>` lines over UART.
+- `vWatchdogTask` — every 2 s, checks that every task's heartbeat counter moved since the last check; panics naming the hung task if one didn't. A 5 s grace period at startup lets slow starters check in first.
+- Software timer `led2` — auto-reload timer toggling LED2 every 1250 ms, independent of the blinker task. The callback runs in the timer daemon context, so it must never block.
 
 > **Does not compile standalone.** This skeleton intentionally excludes the FreeRTOS kernel sources, the port layer, and the MCU startup/linker files — those come from your toolchain and board. See "What you must provide" below.
 
@@ -29,7 +29,7 @@ A FreeRTOS task skeleton for Cortex-M microcontrollers, using only standard Free
    - `board_led2_toggle` — second LED, driven by the software timer
    - `board_panic` — fatal-error handler (log the reason, then halt or reset; must not return)
 4. **Startup code and linker script** for your MCU (usually from STM32Cube or your vendor pack).
-5. **UART RX path** — to feed live commands, call `xQueueSendFromISR(xCmdQueue, ...)` from your UART receive ISR. Until then, the two demo commands seeded in `main()` exercise the handler.
+5. **UART RX path** — to feed live commands, call `xQueueSendFromISR(xCmdQueue, ...)` from your UART receive ISR. Until then, the demo commands seeded in `main()` exercise the handler.
 
 ## Build (example, after providing the above)
 
