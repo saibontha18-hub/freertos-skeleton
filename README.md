@@ -1,5 +1,7 @@
 # freertos-skeleton
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Language](https://img.shields.io/badge/language-C-blue.svg)](main.c) [![FreeRTOS](https://img.shields.io/badge/FreeRTOS-Cortex--M-9cf.svg)](#)
+
 A FreeRTOS task skeleton for Cortex-M. These are the patterns I end up rewriting in every firmware project — periodic tasks, queue-based messaging, a software timer, and a heartbeat watchdog — so I finally put them in one place. All standard FreeRTOS API, nothing port-specific.
 
 ## Tasks and timer
