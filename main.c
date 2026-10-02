@@ -9,6 +9,9 @@
  *                 readings into xSampleQueue.
  *   vLogTask    - consumes xSampleQueue and prints "adc=<raw> tick=<n>"
  *                 lines over UART.
+ *
+ * Plus a software timer (vLed2TimerCallback) toggling LED2 every 1250 ms,
+ * independent of the vLedTask blink rate.
  * (UART RX ISR not included: wire your UART receive interrupt to call
  *  xQueueSendFromISR(xCmdQueue, ...) to feed vCmdTask on real hardware.)
  *
@@ -22,6 +25,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
+#include "timers.h"
 
 #include "board.h"
 
@@ -39,6 +43,8 @@
 #define CMD_MAX_LEN      32
 #define SAMPLE_QUEUE_LEN 16
 
+#define LED2_TIMER_PERIOD_MS 1250
+
 typedef struct
 {
     char text[CMD_MAX_LEN];
@@ -52,6 +58,15 @@ typedef struct
 
 static QueueHandle_t xCmdQueue = NULL;
 static QueueHandle_t xSampleQueue = NULL;
+static TimerHandle_t xLed2Timer = NULL;
+
+/* Software-timer callback: runs in the timer daemon task context, so it
+ * must never block. Toggling a GPIO is fine. */
+static void vLed2TimerCallback(TimerHandle_t xTimer)
+{
+    (void) xTimer;
+    board_led2_toggle();
+}
 
 static void vLedTask(void *pvParameters)
 {
@@ -162,6 +177,16 @@ int main(void)
                 SENSOR_TASK_PRIO, NULL);
     xTaskCreate(vLogTask, "log", LOG_TASK_STACK, NULL,
                 LOG_TASK_PRIO, NULL);
+
+    /* Auto-reload software timer: LED2 blinks at its own rate,
+     * independent of the vLedTask cadence. */
+    xLed2Timer = xTimerCreate("led2",
+                              pdMS_TO_TICKS(LED2_TIMER_PERIOD_MS),
+                              pdTRUE,
+                              NULL,
+                              vLed2TimerCallback);
+    configASSERT(xLed2Timer != NULL);
+    configASSERT(xTimerStart(xLed2Timer, 0) == pdPASS);
 
     /* Seed demo commands so the handler path is exercised even with no
      * UART RX wired up yet. Remove once xQueueSendFromISR feeds the queue. */

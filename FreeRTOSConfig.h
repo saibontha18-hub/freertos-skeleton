@@ -43,6 +43,12 @@
 #define INCLUDE_xTaskDelayUntil                 1
 #define INCLUDE_xTaskGetCurrentTaskHandle       1
 
+/* Software timers: used for the LED2 blink timer in main.c. */
+#define configUSE_TIMERS                        1
+#define configTIMER_TASK_PRIORITY               ( configMAX_PRIORITIES - 1 )
+#define configTIMER_QUEUE_LENGTH                8
+#define configTIMER_TASK_STACK_DEPTH            ( configMINIMAL_STACK_SIZE * 2 )
+
 /* NVIC priority configuration for STM32 (4 priority bits). */
 #define configPRIO_BITS                         4
 #define configLIBRARY_LOWEST_INTERRUPT_PRIORITY  15
