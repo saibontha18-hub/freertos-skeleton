@@ -12,6 +12,10 @@
  *
  * Plus a software timer (vLed2TimerCallback) toggling LED2 every 1250 ms,
  * independent of the vLedTask blink rate.
+ *
+ * Every task updates a heartbeat counter each iteration; vWatchdogTask
+ * verifies all counters advance and calls board_panic() if any task
+ * stops checking in.
  * (UART RX ISR not included: wire your UART receive interrupt to call
  *  xQueueSendFromISR(xCmdQueue, ...) to feed vCmdTask on real hardware.)
  *
@@ -29,15 +33,17 @@
 
 #include "board.h"
 
-#define LED_TASK_PRIO    ( tskIDLE_PRIORITY + 1 )
-#define CMD_TASK_PRIO    ( tskIDLE_PRIORITY + 2 )
-#define SENSOR_TASK_PRIO ( tskIDLE_PRIORITY + 2 )
-#define LOG_TASK_PRIO    ( tskIDLE_PRIORITY + 1 )
+#define LED_TASK_PRIO      ( tskIDLE_PRIORITY + 1 )
+#define CMD_TASK_PRIO      ( tskIDLE_PRIORITY + 2 )
+#define SENSOR_TASK_PRIO   ( tskIDLE_PRIORITY + 2 )
+#define LOG_TASK_PRIO      ( tskIDLE_PRIORITY + 1 )
+#define WATCHDOG_TASK_PRIO ( tskIDLE_PRIORITY + 3 )
 
-#define LED_TASK_STACK    ( configMINIMAL_STACK_SIZE )
-#define CMD_TASK_STACK    ( configMINIMAL_STACK_SIZE * 2 )
-#define SENSOR_TASK_STACK ( configMINIMAL_STACK_SIZE )
-#define LOG_TASK_STACK    ( configMINIMAL_STACK_SIZE * 2 )
+#define LED_TASK_STACK      ( configMINIMAL_STACK_SIZE )
+#define CMD_TASK_STACK      ( configMINIMAL_STACK_SIZE * 2 )
+#define SENSOR_TASK_STACK   ( configMINIMAL_STACK_SIZE )
+#define LOG_TASK_STACK      ( configMINIMAL_STACK_SIZE * 2 )
+#define WATCHDOG_TASK_STACK ( configMINIMAL_STACK_SIZE )
 
 #define CMD_QUEUE_LEN    8
 #define CMD_MAX_LEN      32
@@ -60,6 +66,28 @@ static QueueHandle_t xCmdQueue = NULL;
 static QueueHandle_t xSampleQueue = NULL;
 static TimerHandle_t xLed2Timer = NULL;
 
+/* ---- task heartbeat monitoring ----
+ * Each task increments its counter once per loop iteration. The watchdog
+ * task snapshots the counters every WATCHDOG_PERIOD_MS and panics if any
+ * counter failed to advance, which means that task is stuck or starved.
+ * 32-bit aligned accesses are single-copy atomic on Cortex-M. */
+typedef enum
+{
+    HB_LED = 0,
+    HB_CMD,
+    HB_SENSOR,
+    HB_LOG,
+    HB_COUNT
+} hb_id_t;
+
+static volatile uint32_t ulHeartbeats[HB_COUNT];
+
+#define HEARTBEAT( id )                    \
+    do { ulHeartbeats[ ( id ) ]++; } while ( 0 )
+
+#define WATCHDOG_PERIOD_MS 2000
+#define WATCHDOG_GRACE_MS  5000
+
 /* Software-timer callback: runs in the timer daemon task context, so it
  * must never block. Toggling a GPIO is fine. */
 static void vLed2TimerCallback(TimerHandle_t xTimer)
@@ -75,6 +103,7 @@ static void vLedTask(void *pvParameters)
     for (;;)
     {
         board_led_toggle();
+        HEARTBEAT(HB_LED);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
@@ -88,7 +117,9 @@ static void vCmdTask(void *pvParameters)
 
     for (;;)
     {
-        if (xQueueReceive(xCmdQueue, &cmd, portMAX_DELAY) == pdPASS)
+        /* 1 s timeout instead of portMAX_DELAY: the task must wake up
+         * regularly to update its heartbeat even when no commands arrive. */
+        if (xQueueReceive(xCmdQueue, &cmd, pdMS_TO_TICKS(1000)) == pdPASS)
         {
             cmd.text[CMD_MAX_LEN - 1] = '\0';
 
@@ -114,6 +145,8 @@ static void vCmdTask(void *pvParameters)
                 board_uart_puts("ERR: unknown command\r\n");
             }
         }
+
+        HEARTBEAT(HB_CMD);
     }
 }
 
@@ -132,6 +165,7 @@ static void vSensorTask(void *pvParameters)
          * is better than stalling the sampling cadence. */
         (void) xQueueSend(xSampleQueue, &xSample, 0);
 
+        HEARTBEAT(HB_SENSOR);
         vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
@@ -153,6 +187,43 @@ static void vLogTask(void *pvParameters)
                      (unsigned) xSample.usAdc,
                      (unsigned long) xSample.xTick);
             board_uart_puts(pcLine);
+        }
+
+        HEARTBEAT(HB_LOG);
+    }
+}
+
+static void vWatchdogTask(void *pvParameters)
+{
+    static const char * const pcTaskNames[HB_COUNT] =
+    {
+        "led", "cmd", "sensor", "log"
+    };
+    uint32_t ulLast[HB_COUNT];
+    UBaseType_t uxId;
+
+    (void) pvParameters;
+
+    /* Grace period: let every task check in at least once before the
+     * first comparison, so slow starters don't trip the watchdog. */
+    vTaskDelay(pdMS_TO_TICKS(WATCHDOG_GRACE_MS));
+    for (uxId = 0; uxId < HB_COUNT; uxId++)
+    {
+        ulLast[uxId] = ulHeartbeats[uxId];
+    }
+
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(WATCHDOG_PERIOD_MS));
+
+        for (uxId = 0; uxId < HB_COUNT; uxId++)
+        {
+            if (ulHeartbeats[uxId] == ulLast[uxId])
+            {
+                /* Task stuck or starved: fatal, never returns. */
+                board_panic(pcTaskNames[uxId]);
+            }
+            ulLast[uxId] = ulHeartbeats[uxId];
         }
     }
 }
@@ -177,6 +248,8 @@ int main(void)
                 SENSOR_TASK_PRIO, NULL);
     xTaskCreate(vLogTask, "log", LOG_TASK_STACK, NULL,
                 LOG_TASK_PRIO, NULL);
+    xTaskCreate(vWatchdogTask, "watchdog", WATCHDOG_TASK_STACK, NULL,
+                WATCHDOG_TASK_PRIO, NULL);
 
     /* Auto-reload software timer: LED2 blinks at its own rate,
      * independent of the vLedTask cadence. */

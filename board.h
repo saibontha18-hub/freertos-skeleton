@@ -17,5 +17,7 @@ void board_led_set(int on);         /* on != 0 -> LED on, else off */
 void board_uart_puts(const char *s);/* blocking UART transmit of a C string */
 uint16_t board_adc_read(void);      /* sample the ADC channel (e.g. sensor) */
 void board_led2_toggle(void);       /* toggle the second LED (timer-driven) */
+void board_panic(const char *reason); /* fatal error: log it, then halt/reset.
+                                       * Must not return. */
 
 #endif /* BOARD_H */
