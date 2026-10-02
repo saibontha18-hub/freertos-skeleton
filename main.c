@@ -1,12 +1,14 @@
 /*
- * main.c - Minimal FreeRTOS task skeleton for Cortex-M.
+ * main.c - FreeRTOS task skeleton for Cortex-M.
  *
- * Three tasks, all standard FreeRTOS API:
- *   vLedTask - blinks the board LED every 500 ms (vTaskDelay).
- *   vCmdTask - queue-based command handler: receives text commands from
- *              xCmdQueue and acts on them ("LED ON", "LED OFF", "STATUS").
- *   (UART RX ISR not included: wire your UART receive interrupt to call
- *    xQueueSendFromISR(xCmdQueue, ...) to feed vCmdTask on real hardware.)
+ * Tasks, all standard FreeRTOS API:
+ *   vLedTask    - blinks the board LED every 500 ms (vTaskDelay).
+ *   vCmdTask    - queue-based command handler: receives text commands from
+ *                 xCmdQueue and acts on them ("LED ON", "LED OFF", "STATUS").
+ *   vSensorTask - samples board_adc_read() every 250 ms and pushes the
+ *                 readings into xSampleQueue.
+ * (UART RX ISR not included: wire your UART receive interrupt to call
+ *  xQueueSendFromISR(xCmdQueue, ...) to feed vCmdTask on real hardware.)
  *
  * A couple of demo commands are seeded at startup so the handler path can
  * be observed even before the UART RX path is wired up.
@@ -23,19 +25,29 @@
 
 #define LED_TASK_PRIO    ( tskIDLE_PRIORITY + 1 )
 #define CMD_TASK_PRIO    ( tskIDLE_PRIORITY + 2 )
+#define SENSOR_TASK_PRIO ( tskIDLE_PRIORITY + 2 )
 
-#define LED_TASK_STACK   ( configMINIMAL_STACK_SIZE )
-#define CMD_TASK_STACK   ( configMINIMAL_STACK_SIZE * 2 )
+#define LED_TASK_STACK    ( configMINIMAL_STACK_SIZE )
+#define CMD_TASK_STACK    ( configMINIMAL_STACK_SIZE * 2 )
+#define SENSOR_TASK_STACK ( configMINIMAL_STACK_SIZE )
 
 #define CMD_QUEUE_LEN    8
 #define CMD_MAX_LEN      32
+#define SAMPLE_QUEUE_LEN 16
 
 typedef struct
 {
     char text[CMD_MAX_LEN];
 } cmd_t;
 
+typedef struct
+{
+    TickType_t xTick;   /* xTaskGetTickCount() at sampling time */
+    uint16_t usAdc;     /* raw ADC sample from board_adc_read() */
+} sample_t;
+
 static QueueHandle_t xCmdQueue = NULL;
+static QueueHandle_t xSampleQueue = NULL;
 
 static void vLedTask(void *pvParameters)
 {
@@ -86,6 +98,25 @@ static void vCmdTask(void *pvParameters)
     }
 }
 
+static void vSensorTask(void *pvParameters)
+{
+    sample_t xSample;
+
+    (void) pvParameters;
+
+    for (;;)
+    {
+        xSample.xTick = xTaskGetTickCount();
+        xSample.usAdc = board_adc_read();
+
+        /* 0-tick wait: samples are periodic; dropping one under backpressure
+         * is better than stalling the sampling cadence. */
+        (void) xQueueSend(xSampleQueue, &xSample, 0);
+
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+}
+
 int main(void)
 {
     cmd_t demo;
@@ -95,10 +126,15 @@ int main(void)
     xCmdQueue = xQueueCreate(CMD_QUEUE_LEN, sizeof(cmd_t));
     configASSERT(xCmdQueue != NULL);
 
+    xSampleQueue = xQueueCreate(SAMPLE_QUEUE_LEN, sizeof(sample_t));
+    configASSERT(xSampleQueue != NULL);
+
     xTaskCreate(vLedTask, "led", LED_TASK_STACK, NULL,
                 LED_TASK_PRIO, NULL);
     xTaskCreate(vCmdTask, "cmd", CMD_TASK_STACK, NULL,
                 CMD_TASK_PRIO, NULL);
+    xTaskCreate(vSensorTask, "sensor", SENSOR_TASK_STACK, NULL,
+                SENSOR_TASK_PRIO, NULL);
 
     /* Seed demo commands so the handler path is exercised even with no
      * UART RX wired up yet. Remove once xQueueSendFromISR feeds the queue. */

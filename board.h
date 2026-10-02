@@ -9,9 +9,12 @@
  * with a GPIO LED and a UART will do.
  */
 
+#include <stdint.h>
+
 void board_init(void);              /* clocks, GPIO, UART init */
 void board_led_toggle(void);        /* toggle the status LED */
 void board_led_set(int on);         /* on != 0 -> LED on, else off */
 void board_uart_puts(const char *s);/* blocking UART transmit of a C string */
+uint16_t board_adc_read(void);      /* sample the ADC channel (e.g. sensor) */
 
 #endif /* BOARD_H */
