@@ -1,26 +1,13 @@
 /*
- * main.c - FreeRTOS task skeleton for Cortex-M.
+ * FreeRTOS task skeleton for Cortex-M.
  *
- * Tasks, all standard FreeRTOS API:
- *   vLedTask    - blinks the board LED every 500 ms (vTaskDelay).
- *   vCmdTask    - queue-based command handler: receives text commands from
- *                 xCmdQueue and acts on them ("LED ON", "LED OFF", "STATUS").
- *   vSensorTask - samples board_adc_read() every 250 ms and pushes the
- *                 readings into xSampleQueue.
- *   vLogTask    - consumes xSampleQueue and prints "adc=<raw> tick=<n>"
- *                 lines over UART.
+ * The usual suspects: a blinker, a queue-driven command handler, a sensor
+ * sampler feeding a logger task, a software timer, and a heartbeat
+ * watchdog that panics if any task stops checking in.
  *
- * Plus a software timer (vLed2TimerCallback) toggling LED2 every 1250 ms,
- * independent of the vLedTask blink rate.
- *
- * Every task updates a heartbeat counter each iteration; vWatchdogTask
- * verifies all counters advance and calls board_panic() if any task
- * stops checking in.
- * (UART RX ISR not included: wire your UART receive interrupt to call
- *  xQueueSendFromISR(xCmdQueue, ...) to feed vCmdTask on real hardware.)
- *
- * A couple of demo commands are seeded at startup so the handler path can
- * be observed even before the UART RX path is wired up.
+ * To feed commands from real hardware, hook your UART RX ISR up to
+ * xQueueSendFromISR(xCmdQueue, ...). Until then, main() seeds a couple
+ * of demo commands so you can watch the handler work.
  */
 
 #include <string.h>
@@ -66,11 +53,9 @@ static QueueHandle_t xCmdQueue = NULL;
 static QueueHandle_t xSampleQueue = NULL;
 static TimerHandle_t xLed2Timer = NULL;
 
-/* ---- task heartbeat monitoring ----
- * Each task increments its counter once per loop iteration. The watchdog
- * task snapshots the counters every WATCHDOG_PERIOD_MS and panics if any
- * counter failed to advance, which means that task is stuck or starved.
- * 32-bit aligned accesses are single-copy atomic on Cortex-M. */
+/* Heartbeat watchdog: each task bumps its counter once per loop.
+ * The watchdog snapshots them every 2 s and panics on any counter that
+ * stopped moving. 32-bit writes are atomic on Cortex-M, so no lock needed. */
 typedef enum
 {
     HB_LED = 0,
@@ -88,8 +73,7 @@ static volatile uint32_t ulHeartbeats[HB_COUNT];
 #define WATCHDOG_PERIOD_MS 2000
 #define WATCHDOG_GRACE_MS  5000
 
-/* Software-timer callback: runs in the timer daemon task context, so it
- * must never block. Toggling a GPIO is fine. */
+/* Timer callbacks run in the daemon task: never block in here. */
 static void vLed2TimerCallback(TimerHandle_t xTimer)
 {
     (void) xTimer;
@@ -117,8 +101,8 @@ static void vCmdTask(void *pvParameters)
 
     for (;;)
     {
-        /* 1 s timeout instead of portMAX_DELAY: the task must wake up
-         * regularly to update its heartbeat even when no commands arrive. */
+        /* 1 s timeout instead of portMAX_DELAY, so the heartbeat keeps
+         * ticking even when no commands are coming in. */
         if (xQueueReceive(xCmdQueue, &cmd, pdMS_TO_TICKS(1000)) == pdPASS)
         {
             cmd.text[CMD_MAX_LEN - 1] = '\0';
@@ -161,8 +145,8 @@ static void vSensorTask(void *pvParameters)
         xSample.xTick = xTaskGetTickCount();
         xSample.usAdc = board_adc_read();
 
-        /* 0-tick wait: samples are periodic; dropping one under backpressure
-         * is better than stalling the sampling cadence. */
+        /* Don't wait on a full queue: dropping a sample beats stalling
+         * the sampling cadence. */
         (void) xQueueSend(xSampleQueue, &xSample, 0);
 
         HEARTBEAT(HB_SENSOR);
@@ -179,8 +163,7 @@ static void vLogTask(void *pvParameters)
 
     for (;;)
     {
-        /* 1 s timeout instead of portMAX_DELAY: stays responsive and gives
-         * the task a chance to do periodic work even when no samples arrive. */
+        /* 1 s timeout so the task stays responsive when samples dry up. */
         if (xQueueReceive(xSampleQueue, &xSample, pdMS_TO_TICKS(1000)) == pdPASS)
         {
             snprintf(pcLine, sizeof(pcLine), "adc=%u tick=%lu\r\n",
@@ -204,8 +187,7 @@ static void vWatchdogTask(void *pvParameters)
 
     (void) pvParameters;
 
-    /* Grace period: let every task check in at least once before the
-     * first comparison, so slow starters don't trip the watchdog. */
+    /* Let every task check in once before the first comparison. */
     vTaskDelay(pdMS_TO_TICKS(WATCHDOG_GRACE_MS));
     for (uxId = 0; uxId < HB_COUNT; uxId++)
     {
@@ -220,7 +202,7 @@ static void vWatchdogTask(void *pvParameters)
         {
             if (ulHeartbeats[uxId] == ulLast[uxId])
             {
-                /* Task stuck or starved: fatal, never returns. */
+                /* Hung task: no recovery, panic. */
                 board_panic(pcTaskNames[uxId]);
             }
             ulLast[uxId] = ulHeartbeats[uxId];
@@ -251,8 +233,7 @@ int main(void)
     xTaskCreate(vWatchdogTask, "watchdog", WATCHDOG_TASK_STACK, NULL,
                 WATCHDOG_TASK_PRIO, NULL);
 
-    /* Auto-reload software timer: LED2 blinks at its own rate,
-     * independent of the vLedTask cadence. */
+    /* LED2 on its own timer, independent of the blinker task. */
     xLed2Timer = xTimerCreate("led2",
                               pdMS_TO_TICKS(LED2_TIMER_PERIOD_MS),
                               pdTRUE,
@@ -261,8 +242,8 @@ int main(void)
     configASSERT(xLed2Timer != NULL);
     configASSERT(xTimerStart(xLed2Timer, 0) == pdPASS);
 
-    /* Seed demo commands so the handler path is exercised even with no
-     * UART RX wired up yet. Remove once xQueueSendFromISR feeds the queue. */
+    /* Demo commands so the handler path runs before the UART RX ISR is
+     * wired up. Delete once xQueueSendFromISR feeds the queue. */
     strncpy(demo.text, "STATUS", sizeof(demo.text));
     xQueueSend(xCmdQueue, &demo, 0);
 
