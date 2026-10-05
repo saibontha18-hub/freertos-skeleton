@@ -64,6 +64,12 @@ Adjust CPU flags, include paths, and the linker script for your exact part.
 - `board.h` — BSP interface you implement per board (LEDs, UART, ADC, panic)
 - `FreeRTOSConfig.h` — template configuration (adapt to your MCU; software timers enabled)
 
+## Screenshots
+
+![QEMU run of the skeleton on lm3s6965evb](docs/screenshots/qemu_run.png)
+
+QEMU run (lm3s6965evb) of the skeleton: task startup, ADC log lines, and the diagnostic run that caught the LED2 software-timer bug — 0 callbacks when the timer was started before the scheduler existed. Fixed by starting the timer from a task once the scheduler (and the timer daemon) is up.
+
 ## License
 
 MIT
