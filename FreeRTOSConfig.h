@@ -35,11 +35,16 @@
 /* Cortex-M4F specific: enable the FPU lazy stacking in the port. */
 #define configENABLE_FPU                        1
 
+/* Assert loud by default. The stock no-op assert is exactly how the LED2
+ * timer died silently: xTimerStart() returned pdFAIL and nobody noticed. */
+#define configASSERT( x )                        if( ( x ) == 0 ) { taskDISABLE_INTERRUPTS(); for( ;; ); }
+
 /* API inclusion */
 #define INCLUDE_vTaskPrioritySet                1
 #define INCLUDE_uxTaskPriorityGet                1
 #define INCLUDE_vTaskDelete                     1
 #define INCLUDE_vTaskSuspend                    1
+#define INCLUDE_vTaskDelay                      1
 #define INCLUDE_xTaskDelayUntil                 1
 #define INCLUDE_xTaskGetCurrentTaskHandle       1
 

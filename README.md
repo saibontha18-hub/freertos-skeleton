@@ -7,7 +7,7 @@ A FreeRTOS task skeleton for Cortex-M. These are the patterns I end up rewriting
 ## Tasks and timer
 
 - `vLedTask` — blinks LED1 every 500 ms with `vTaskDelay`.
-- `vCmdTask` — queue-based command handler: receives text commands via `xCmdQueue` and dispatches `LED ON` / `LED OFF` / `STATUS`. Uses a 1 s receive timeout instead of `portMAX_DELAY` so the heartbeat keeps ticking when no commands are coming in.
+- `vCmdTask` — queue-based command handler: receives text commands via `xCmdQueue` and dispatches `LED ON` / `LED OFF` / `LED AUTO` / `STATUS`. Uses a 1 s receive timeout instead of `portMAX_DELAY` so the heartbeat keeps ticking when no commands are coming in. `LED ON`/`LED OFF` pause the blinker task's auto-blink so the LED stays where you put it (they used to get overwritten within 500 ms); `LED AUTO` resumes the blink.
 - `vSensorTask` — samples `board_adc_read()` every 250 ms into `xSampleQueue`. If the queue fills up it drops the sample rather than stalling the cadence.
 - `vLogTask` — drains `xSampleQueue` and prints `adc=<raw> tick=<n>` lines over UART.
 - `vWatchdogTask` — every 2 s, checks that every task's heartbeat counter moved since the last check; panics naming the hung task if one didn't. A 5 s grace period at startup lets slow starters check in first.
@@ -32,6 +32,7 @@ A FreeRTOS task skeleton for Cortex-M. These are the patterns I end up rewriting
    - `board_panic` — fatal-error handler (log the reason, then halt or reset; must not return)
 4. **Startup code and linker script** for your MCU (usually from STM32Cube or your vendor pack).
 5. **UART RX path** — to feed live commands, call `xQueueSendFromISR(xCmdQueue, ...)` from your UART receive ISR. Until then, the demo commands seeded in `main()` exercise the handler.
+6. **Application hooks** — `main.c` already defines `vApplicationMallocFailedHook` and `vApplicationStackOverflowHook` (both call `board_panic`), which the template `FreeRTOSConfig.h` requires via `configUSE_MALLOC_FAILED_HOOK=1` and `configCHECK_FOR_STACK_OVERFLOW=2`. If you turn those options off, delete the hooks; if you keep them, keep the hooks.
 
 ## Build (example, after providing the above)
 

@@ -73,6 +73,22 @@ static volatile uint32_t ulHeartbeats[HB_COUNT];
 #define WATCHDOG_PERIOD_MS 2000
 #define WATCHDOG_GRACE_MS  5000
 
+/* The template config turns on configUSE_MALLOC_FAILED_HOOK and
+ * configCHECK_FOR_STACK_OVERFLOW, which makes the kernel call these two
+ * hooks. Without them the build links nothing — heap_4.c and the stack
+ * check macros both reference them. Neither failure is recoverable at
+ * runtime, so both go straight to board_panic. */
+void vApplicationMallocFailedHook(void)
+{
+    board_panic("malloc failed");
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void) xTask;
+    board_panic(pcTaskName);
+}
+
 /* Timer callbacks run in the daemon task: never block in here. */
 static void vLed2TimerCallback(TimerHandle_t xTimer)
 {
@@ -80,13 +96,30 @@ static void vLed2TimerCallback(TimerHandle_t xTimer)
     board_led2_toggle();
 }
 
+/* The blinker task and the command handler both used to drive LED1, so
+ * whoever ran last won: an ON/OFF command got overwritten within 500 ms.
+ * Now an explicit command pauses the auto-blink (the blinker yields), and
+ * "LED AUTO" resumes it. */
+static volatile BaseType_t xLedAutoBlink = pdTRUE;
+
 static void vLedTask(void *pvParameters)
 {
     (void) pvParameters;
 
+    /* The timer daemon (and its command queue) only exists after the
+     * scheduler starts, so xTimerStart from main() quietly returned pdFAIL
+     * and the LED2 timer never fired. Starting it here is the first thing
+     * the LED task does, once the daemon is guaranteed to be up. */
+    configASSERT(xTimerStart(xLed2Timer, 0) == pdPASS);
+
     for (;;)
     {
-        board_led_toggle();
+        /* Skip the toggle while a command has set the LED explicitly;
+         * "LED AUTO" resumes the blink. */
+        if (xLedAutoBlink)
+        {
+            board_led_toggle();
+        }
         HEARTBEAT(HB_LED);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -109,13 +142,22 @@ static void vCmdTask(void *pvParameters)
 
             if (strncmp(cmd.text, "LED ON", 6) == 0)
             {
+                /* Explicit command wins over the blinker: pause auto-blink
+                 * so the LED stays where the user put it. */
+                xLedAutoBlink = pdFALSE;
                 board_led_set(1);
-                board_uart_puts("OK: LED on\r\n");
+                board_uart_puts("OK: LED on (auto-blink paused)\r\n");
             }
             else if (strncmp(cmd.text, "LED OFF", 7) == 0)
             {
+                xLedAutoBlink = pdFALSE;
                 board_led_set(0);
-                board_uart_puts("OK: LED off\r\n");
+                board_uart_puts("OK: LED off (auto-blink paused)\r\n");
+            }
+            else if (strncmp(cmd.text, "LED AUTO", 8) == 0)
+            {
+                xLedAutoBlink = pdTRUE;
+                board_uart_puts("OK: LED auto-blink resumed\r\n");
             }
             else if (strncmp(cmd.text, "STATUS", 6) == 0)
             {
@@ -233,14 +275,15 @@ int main(void)
     xTaskCreate(vWatchdogTask, "watchdog", WATCHDOG_TASK_STACK, NULL,
                 WATCHDOG_TASK_PRIO, NULL);
 
-    /* LED2 on its own timer, independent of the blinker task. */
+    /* LED2 on its own timer, independent of the blinker task. Started
+     * from vLedTask, not here: the timer daemon doesn't exist until the
+     * scheduler is running. */
     xLed2Timer = xTimerCreate("led2",
                               pdMS_TO_TICKS(LED2_TIMER_PERIOD_MS),
                               pdTRUE,
                               NULL,
                               vLed2TimerCallback);
     configASSERT(xLed2Timer != NULL);
-    configASSERT(xTimerStart(xLed2Timer, 0) == pdPASS);
 
     /* Demo commands so the handler path runs before the UART RX ISR is
      * wired up. Delete once xQueueSendFromISR feeds the queue. */
